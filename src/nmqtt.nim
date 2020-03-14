@@ -174,13 +174,13 @@ proc nextMsgId(ctx: MqttCtx): MsgId =
   inc ctx.msgIdSeq
   return ctx.msgIdSeq
 
-proc sendDisconnect(ctx: MqttCtx): Future[bool] {.async.}
+proc sendDisconnect(ctx: MqttCtx): Future[bool]
 
 proc close(ctx: MqttCtx, reason: string="User request") {.async.} =
   if ctx.state in {Connecting, Connected}:
     ctx.state = Disconnecting
     ctx.dbg "Closing: " & reason
-    discard await ctx.sendDisconnect()
+    asyncCheck ctx.sendDisconnect()
     ctx.s.close()
     ctx.state = Disconnected
 
@@ -254,7 +254,7 @@ proc recv(ctx: MqttCtx): Future[Pkt] {.async.} =
   return pkt
 
 
-proc sendConnect(ctx: MqttCtx): Future[bool] {.async.} =
+proc sendConnect(ctx: MqttCtx): Future[bool] =
   var flags: uint8
   flags = flags or CleanSession.uint8
   if ctx.username != "":
@@ -272,13 +272,13 @@ proc sendConnect(ctx: MqttCtx): Future[bool] {.async.} =
   if ctx.password != "":
     pkt.put ctx.password, true
   ctx.state = Connecting
-  return await ctx.send(pkt)
+  result = ctx.send(pkt)
 
-proc sendDisconnect(ctx: MqttCtx): Future[bool] {.async.} =
+proc sendDisconnect(ctx: MqttCtx): Future[bool] =
   let pkt = newPkt(Disconnect, 0)
-  return await ctx.send(pkt)
+  result = ctx.send(pkt)
 
-proc sendPublish(ctx: MqttCtx, msgId: MsgId, topic: string, message: string, qos: Qos, retain: bool): Future[bool] {.async.} =
+proc sendPublish(ctx: MqttCtx, msgId: MsgId, topic: string, message: string, qos: Qos, retain: bool): Future[bool] =
   var flags = (qos shl 1).uint8
   if retain:
     flags = flags or 1
@@ -287,35 +287,35 @@ proc sendPublish(ctx: MqttCtx, msgId: MsgId, topic: string, message: string, qos
   if qos > 0:
     pkt.put msgId.uint16
   pkt.put message, false
-  return await ctx.send(pkt)
+  result = ctx.send(pkt)
 
-proc sendSubscribe(ctx: MqttCtx, msgId: MsgId, topic: string, qos: Qos): Future[bool] {.async.} =
+proc sendSubscribe(ctx: MqttCtx, msgId: MsgId, topic: string, qos: Qos): Future[bool] =
   var pkt = newPkt(Subscribe, 0b0010)
   pkt.put msgId.uint16
   pkt.put topic, true
   pkt.put qos.uint8
-  return await ctx.send(pkt)
+  result = ctx.send(pkt)
 
-proc sendPubAck(ctx: MqttCtx, msgId: MsgId): Future[bool] {.async.} =
+proc sendPubAck(ctx: MqttCtx, msgId: MsgId): Future[bool] =
   var pkt = newPkt(PubAck, 0b0010)
   pkt.put msgId.uint16
-  return await ctx.send(pkt)
+  result = ctx.send(pkt)
 
-proc sendPubRel(ctx: MqttCtx, msgId: MsgId): Future[bool] {.async.} =
+proc sendPubRel(ctx: MqttCtx, msgId: MsgId): Future[bool] =
   var pkt = newPkt(PubRel, 0b0010)
   pkt.put msgId.uint16
-  return await ctx.send(pkt)
+  result = ctx.send(pkt)
 
-proc sendWork(ctx: MqttCtx, work: Work): Future[bool] {.async.} =
-  return case work.wk
-    of PubWork:
-      await ctx.sendPublish(work.msgId, work.topic, work.message, work.qos, work.retain)
-    of SubWork:
-      await ctx.sendSubscribe(work.msgId, work.topic, work.qos)
+proc sendWork(ctx: MqttCtx, work: Work): Future[bool] =
+  case work.wk
+  of PubWork:
+    result = ctx.sendPublish(work.msgId, work.topic, work.message, work.qos, work.retain)
+  of SubWork:
+    result = ctx.sendSubscribe(work.msgId, work.topic, work.qos)
 
-proc sendPingReq(ctx: MqttCtx): Future[bool] {.async.} =
+proc sendPingReq(ctx: MqttCtx): Future[bool] =
   var pkt = newPkt(Pingreq)
-  return await ctx.send(pkt)
+  result = ctx.send(pkt)
 
 proc work(ctx: MqttCtx) {.async.} =
   if ctx.state == Connected:
@@ -332,14 +332,14 @@ proc work(ctx: MqttCtx) {.async.} =
     for msgId in delWork:
       ctx.workQueue.del msgId
 
-proc onConnAck(ctx: MqttCtx, pkt: Pkt) {.async.} =
+proc onConnAck(ctx: MqttCtx, pkt: Pkt): Future[void] =
   ctx.state = Connected
   let (code, _) = pkt.getu8(1)
   if code == 0:
     ctx.dbg "Connection established"
   else:
     ctx.wrn "Connect failed, code " & $code
-  await ctx.work()
+  result = ctx.work()
 
 proc onPublish(ctx: MqttCtx, pkt: Pkt) {.async.} =
   let qos = (pkt.flags shr 1) and 0x03
@@ -390,15 +390,15 @@ proc onSubAck(ctx: MqttCtx, pkt: Pkt) {.async.} =
 proc onPingResp(ctx: MqttCtx, pkt: Pkt) {.async.} =
   discard
 
-proc handle(ctx: MqttCtx, pkt: Pkt) {.async.} =
+proc handle(ctx: MqttCtx, pkt: Pkt): Future[void] =
   case pkt.typ
-    of ConnAck: await ctx.onConnAck(pkt)
-    of Publish: await ctx.onPublish(pkt)
-    of PubAck: await ctx.onPubAck(pkt)
-    of PubRec: await ctx.onPubRec(pkt)
-    of PubComp: await ctx.onPubComp(pkt)
-    of SubAck: await ctx.onSubAck(pkt)
-    of PingResp: await ctx.onPingResp(pkt)
+    of ConnAck: result = ctx.onConnAck(pkt)
+    of Publish: result = ctx.onPublish(pkt)
+    of PubAck: result = ctx.onPubAck(pkt)
+    of PubRec: result = ctx.onPubRec(pkt)
+    of PubComp: result = ctx.onPubComp(pkt)
+    of SubAck: result = ctx.onSubAck(pkt)
+    of PingResp: result = ctx.onPingResp(pkt)
     else: ctx.wrn "Unond pkt type " & $pkt.typ
 
 #
@@ -480,20 +480,20 @@ proc start*(ctx: MqttCtx) {.async.} =
   while ctx.state != Connected and ctx.state != Error:
     await sleepAsync 1000
 
-proc publish*(ctx: MqttCtx, topic: string, message: string, qos=0) {.async.} =
+proc publish*(ctx: MqttCtx, topic: string, message: string, qos=0): Future[void]=
   ## Publish a message
 
   let msgId = ctx.nextMsgId()
   ctx.workQueue[msgId] = Work(wk: PubWork, msgId: msgId, topic: topic, message: message, qos: qos)
-  await ctx.work()
+  result = ctx.work()
 
-proc subscribe*(ctx: MqttCtx, topic: string, qos: int, callback: PubCallback) {.async.} =
+proc subscribe*(ctx: MqttCtx, topic: string, qos: int, callback: PubCallback): Future[void] =
   ## Subscribe to a topic
 
   let msgId = ctx.nextMsgId()
   ctx.workQueue[msgId] = Work(wk: SubWork, msgId: msgId, topic: topic, qos: qos)
   ctx.pubCallbacks.add callback
-  await ctx.work()
+  result = ctx.work()
 
 when isMainModule:
   proc flop() {.async.} =
